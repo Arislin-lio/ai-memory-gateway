@@ -699,7 +699,13 @@ async function loadMemories() {
     } catch(e) { showMsg('err', '加载失败：' + e.message); }
 }
 
-function fmtTime(s) { if (!s) return '-'; return s.slice(0, 19).replace('T', ' '); }
+function fmtTime(s) {
+    if (!s) return '-';
+    var d = new Date(s.endsWith('Z') ? s : s + 'Z');
+    if (isNaN(d)) return s.slice(0, 19).replace('T', ' ');
+    var pad = function(n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
 
 function renderTable(mems) {
     const tbody = document.getElementById('tbody');
@@ -725,7 +731,7 @@ function filterAndSort() {
         mems = mems.filter(m => m.content.toLowerCase().includes(q));
     }
     if (dateVal) {
-        mems = mems.filter(m => m.created_at && m.created_at.slice(0, 10) === dateVal);
+        mems = mems.filter(m => m.created_at && fmtTime(m.created_at).slice(0, 10) === dateVal);
     }
     mems = [...mems].sort((a, b) => {
         if (sort === 'id-desc') return b.id - a.id;
