@@ -17,6 +17,7 @@ import json
 import uuid
 import asyncio
 import httpx
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
@@ -51,6 +52,9 @@ MAX_MEMORIES_INJECT = int(os.getenv("MAX_MEMORIES_INJECT", "15"))
 
 # 记忆提取间隔（0 = 禁用自动提取，1 = 每轮提取，N = 每 N 轮提取一次）
 MEMORY_EXTRACT_INTERVAL = int(os.getenv("MEMORY_EXTRACT_INTERVAL", "1"))
+
+# 时区偏移（小时），用于记忆注入时的日期显示，默认 UTC+8
+TIMEZONE_HOURS = int(os.getenv("TIMEZONE_HOURS", "8"))
 
 # 轮次计数器
 _round_counter = 0
@@ -137,9 +141,12 @@ async def build_system_prompt_with_memories(user_message: str) -> str:
             date_str = ""
             if mem.get("created_at"):
                 try:
-                    date_str = f"[{str(mem['created_at'])[:10]}] "
+                    utc_str = str(mem['created_at'])[:19]
+                    utc_dt = datetime.strptime(utc_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    local_dt = utc_dt + timedelta(hours=TIMEZONE_HOURS)
+                    date_str = f"[{local_dt.strftime('%Y-%m-%d')}] "
                 except:
-                    pass
+                    date_str = f"[{str(mem['created_at'])[:10]}] "
             memory_lines.append(f"- {date_str}{mem['content']}")
         memory_text = "\n".join(memory_lines)
         
@@ -408,17 +415,17 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
     async with httpx.AsyncClient(timeout=300) as client:
         async with client.stream("POST", API_BASE_URL, headers=headers, json=body) as response:
             async for line in response.aiter_lines():
-                if line:
-                    yield line + "\n"
-                    if line.startswith("data: ") and line != "data: [DONE]":
-                        try:
-                            data = json.loads(line[6:])
-                            delta = data.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                full_response.append(content)
-                        except (json.JSONDecodeError, KeyError, IndexError):
-                            pass
+                # 透传所有行（包括空行），保持SSE格式完整
+                yield line + "\n"
+                if line.startswith("data: ") and line != "data: [DONE]":
+                    try:
+                        data = json.loads(line[6:])
+                        delta = data.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            full_response.append(content)
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
     
     assistant_msg = "".join(full_response)
     if MEMORY_ENABLED and user_message and assistant_msg:
