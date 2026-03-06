@@ -59,6 +59,13 @@ TIMEZONE_HOURS = int(os.getenv("TIMEZONE_HOURS", "8"))
 # 轮次计数器
 _round_counter = 0
 
+# 强制流式传输（部分客户端不发stream=true导致thinking数据丢失，开启后强制所有请求走流式）
+FORCE_STREAM = os.getenv("FORCE_STREAM", "false").lower() == "true"
+
+# 推理/思维链参数（部分客户端走网关时不会自动添加reasoning参数，导致上游不返回thinking数据）
+# 设为 low/medium/high 会在转发请求时注入 reasoning_effort 参数
+REASONING_EFFORT = os.getenv("REASONING_EFFORT", "")
+
 # 额外的请求头（有些 API 需要，比如 OpenRouter 需要 Referer）
 EXTRA_REFERER = os.getenv("EXTRA_REFERER", "https://ai-memory-gateway.local")
 EXTRA_TITLE = os.getenv("EXTRA_TITLE", "AI Memory Gateway")
@@ -380,6 +387,19 @@ async def chat_completions(request: Request):
     
     is_stream = body.get("stream", False)
     
+    # 强制流式传输（解决部分客户端不发stream=true的问题）
+    if FORCE_STREAM and not is_stream:
+        is_stream = True
+        body["stream"] = True
+        print(f"⚡ 强制开启流式传输（FORCE_STREAM=true）")
+    
+    # 注入推理参数（解决客户端走网关时不带reasoning参数的问题）
+    if REASONING_EFFORT and "reasoning_effort" not in body:
+        body["reasoning_effort"] = REASONING_EFFORT
+        print(f"🧠 注入推理参数: reasoning_effort={REASONING_EFFORT}")
+    
+    print(f"📡 请求: model={model}, stream={is_stream}, memory={'on' if MEMORY_ENABLED else 'off'}", flush=True)
+    
     if is_stream:
         return StreamingResponse(
             stream_and_capture(headers, body, session_id, user_message, model, original_messages),
@@ -415,9 +435,12 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
     
     async with httpx.AsyncClient(timeout=300) as client:
         async with client.stream("POST", API_BASE_URL, headers=headers, json=body) as response:
+            # 打印上游响应头（排查thinking问题用）
+            upstream_ct = response.headers.get("content-type", "")
+            print(f"📨 上游响应: status={response.status_code}, content-type={upstream_ct}", flush=True)
+            
             async for chunk in response.aiter_bytes():
                 # 原始字节直接透传给客户端
-                # 不做任何行分割处理，保持SSE格式和thinking数据完整
                 yield chunk
                 
                 # 旁路解析：从字节流中提取assistant回复内容，用于后续记忆提取
@@ -1032,4 +1055,8 @@ if __name__ == "__main__":
     print(f"🔗 API 地址：{API_BASE_URL}")
     print(f"🧠 记忆系统：{'开启' if MEMORY_ENABLED else '关闭'}")
     print(f"🔄 记忆提取间隔：{'禁用' if MEMORY_EXTRACT_INTERVAL == 0 else '每轮提取' if MEMORY_EXTRACT_INTERVAL == 1 else f'每 {MEMORY_EXTRACT_INTERVAL} 轮提取一次'}")
+    if FORCE_STREAM:
+        print(f"⚡ 强制流式传输：开启")
+    if REASONING_EFFORT:
+        print(f"🧠 推理参数注入：{REASONING_EFFORT}")
     uvicorn.run(app, host="0.0.0.0", port=PORT)
