@@ -134,6 +134,9 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
             data = response.json()
             text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
+            # 打印模型原始返回（截断防刷屏）
+            print(f"📝 记忆模型原始返回:\n{text[:500]}", flush=True)
+
             # 清理可能的 markdown 格式
             text = text.strip()
             if text.startswith("```json"):
@@ -144,8 +147,23 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
                 text = text[:-3]
             text = text.strip()
 
-            # 解析 JSON
-            memories = json.loads(text)
+            # 强力JSON提取：如果上面清理后仍然解析失败，用正则兜底
+            try:
+                memories = json.loads(text)
+            except json.JSONDecodeError:
+                # 尝试从文本中提取第一个 [...] 结构
+                import re
+                match = re.search(r'\[.*\]', text, re.DOTALL)
+                if match:
+                    try:
+                        memories = json.loads(match.group())
+                        print(f"📝 JSON正则兜底提取成功")
+                    except json.JSONDecodeError as e:
+                        print(f"⚠️  记忆提取结果解析失败: {e}")
+                        return []
+                else:
+                    print(f"⚠️  记忆提取结果中未找到JSON数组")
+                    return []
 
             if not isinstance(memories, list):
                 return []
@@ -230,7 +248,18 @@ async def score_memories(texts: List[str]) -> List[Dict]:
                 text = text[:-3]
             text = text.strip()
 
-            memories = json.loads(text)
+            try:
+                memories = json.loads(text)
+            except json.JSONDecodeError:
+                import re
+                match = re.search(r'\[.*\]', text, re.DOTALL)
+                if match:
+                    try:
+                        memories = json.loads(match.group())
+                    except json.JSONDecodeError:
+                        return [{"content": t, "importance": 5} for t in texts]
+                else:
+                    return [{"content": t, "importance": 5} for t in texts]
 
             if not isinstance(memories, list):
                 return [{"content": t, "importance": 5} for t in texts]
